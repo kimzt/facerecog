@@ -22,8 +22,17 @@ import imageio
 import tensorflow as tf
 from tensorflow import keras as K
 from tensorflow.keras import layers
+from tensorflow.python.ops import nn
 
 AUTOTUNE = tf.data.experimental.AUTOTUNE
+
+def patch_depthwise_conv():
+    x = nn.depthwise_conv2d
+    def cpu_op(*args, **kwargs):
+        # print("running the CPU op")
+        with tf.device("/device:CPU:0"):
+            return x(*args, **kwargs)
+    nn.depthwise_conv2d = cpu_op
 
 def main(args):
     os.environ['TF_CPP_MIN_LOG_LEVEL'] = '1' #filter INFO
@@ -37,6 +46,10 @@ def main(args):
     np.random.seed(args.seed)
     tf.random.set_seed(args.seed)
 
+    ## patch depthwise-conv running on CPU 
+    # ref - https://colab.research.google.com/drive/1SAg0ghLHQOirjJLBTrJYr4aXFizTftS_?usp=sharing#scrollTo=1ncw-LKk71_k
+    # patch_depthwise_conv()
+
     ## setting gpu memory
     gpus = tf.config.experimental.list_physical_devices('GPU') #return 1 GPU because of 'CUDA_VISIBLE_DEVICES'
     if gpus:
@@ -49,14 +62,14 @@ def main(args):
     weight_decay = 1e-4
     batch_size = 256
 
-    ## building a model0
-    img_size = 112
-    img_inputs = K.Input(shape=(img_size, img_size, 3), name="img_inputs")
+    ## building a model
+    img_size = 28
+    img_inputs = K.Input(shape=(img_size, img_size, 1), name="img_inputs")
     x = K.layers.Conv2D(filters=64, kernel_size=[3,3], strides=1)(img_inputs)
-    # x = K.layers.DepthwiseConv2D(kernel_size=[3,3], strides=1, depth_multiplier=1,
-    #             padding='same', activation='relu', use_bias=False,
-    #             kernel_initializer=K.initializers.HeNormal(seed=2020),
-    #             kernel_regularizer=K.regularizers.L2(weight_decay))(x)
+    x = K.layers.DepthwiseConv2D(kernel_size=[3,3], strides=1, depth_multiplier=1,
+                padding='same', activation='relu', use_bias=False,
+                kernel_initializer=K.initializers.HeNormal(seed=2020),
+                kernel_regularizer=K.regularizers.L2(weight_decay))(x)
     x = K.layers.GlobalAveragePooling2D()(x)
     x = K.layers.Dropout(0.5, seed=2020)(x)
     embeddings = K.layers.Dense(64, activation=None)(x)
@@ -79,12 +92,10 @@ def main(args):
 
     # Prepare the training dataset.    
     (x_train, y_train), (x_test, y_test) = K.datasets.mnist.load_data()
-    x_train = np.array((60000, img_size, img_size, 3)) #temporal
-    y_train = y_train[:60000]
     train_dataset = tf.data.Dataset.from_tensor_slices((x_train, y_train))
     train_dataset = train_dataset.shuffle(buffer_size=1024).batch(batch_size)
     
-    epochs = 10
+    epochs = 5
     for epoch in range(epochs):
         print("\nStart of epoch %d" % (epoch,))
 
@@ -102,22 +113,16 @@ def main(args):
             optimizer.apply_gradients(zip(grads, train_model.trainable_variables))
 
             # Log every 200 batches.
-            if step % 200 == 0:
+            if step % 150 == 0:
                 print(
                     "Training loss (for one batch) at step %d: %.4f"
                     % (step, float(total_loss))
                 )
                 # print("Seen so far: %s samples" % ((step + 1) * 64))
                 
-            ## debug code
-            # if step == 200:
-            #     with open('debug_train{}.pkl'.format(args.gpu_no), 'wb') as f:
-            #         pickle.dump((x_batch_train, y_batch_train, embs, embs, grads, train_model.trainable_variables), f)
-            #     exit()
-
+    ## debug code
     with open('debug_train{}.pkl'.format(args.gpu_no), 'wb') as f:
-        pickle.dump((x_batch_train, y_batch_train, 0, embs, grads, train_model.trainable_variables), f)
-        
+        pickle.dump((x_batch_train, y_batch_train, embs, train_model.trainable_variables), f)            
 
 class Logits(K.layers.Layer):
     def __init__(self, nrof_classes, weight_decay=0.0):
